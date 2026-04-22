@@ -3,12 +3,10 @@
 # Interface for AI agent harness
 # Usage: ./run-sandbox.sh <eshopweb|medplum> <build|run|reset|health>
 
-set -euo pipefail
-
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 SANDBOX_ROOT="$(dirname "$SCRIPT_DIR")"
 
-SANDBOX=${1:-}
+SANDBOX=$1
 OPERATION=${2:-run}
 
 if [ -z "$SANDBOX" ]; then
@@ -37,38 +35,54 @@ echo "=========================================="
 case $OPERATION in
     build)
         echo "Building Docker images for $SANDBOX..."
-        mkdir -p output
-        docker compose build sandbox-runner
+        docker compose build --no-cache
         EXIT_CODE=$?
         ;;
     
     run)
         echo "Running full sandbox sequence for $SANDBOX..."
+        # Create output directory
         mkdir -p output
-        rm -f output/build.log output/test-results.json output/health.json output/exit_code.txt
-
-        echo "Starting infrastructure services..."
-        if [ "$SANDBOX" = "eshopweb" ]; then
-            docker compose up -d sqlserver
-        else
-            docker compose up -d postgres redis
+        
+        # Check if images exist, build if not
+        if ! docker compose config > /dev/null 2>&1; then
+            echo "Building images..."
+            docker compose build
         fi
-
-        echo "Running sandbox runner..."
-        set +e
-        docker compose run --rm sandbox-runner
-        EXIT_CODE=$?
-        set -e
-
+        
+        # Start services in background
+        echo "Starting services..."
+        docker compose up -d
+        
+        # Wait for primary service to be healthy
+        if [ "$SANDBOX" = "eshopweb" ]; then
+            PRIMARY_SERVICE="eshopwebmvc"
+            WAIT_TIME=45
+        else
+            PRIMARY_SERVICE="medplum-server"
+            WAIT_TIME=60
+        fi
+        
+        echo "Waiting for $PRIMARY_SERVICE to be healthy (max ${WAIT_TIME}s)..."
+        for i in $(seq 1 $WAIT_TIME); do
+            if docker compose ps | grep -q "$PRIMARY_SERVICE.*healthy"; then
+                echo "Service $PRIMARY_SERVICE is healthy!"
+                break
+            fi
+            if [ $i -eq $WAIT_TIME ]; then
+                echo "WARNING: Service did not reach healthy state within timeout"
+                docker compose logs
+            fi
+            sleep 1
+        done
+        
+        # Display results
         echo ""
         echo "=========================================="
-        if [ $EXIT_CODE -eq 0 ]; then
-            echo "Sandbox $SANDBOX completed successfully."
-        else
-            echo "Sandbox $SANDBOX failed with exit code $EXIT_CODE."
-        fi
+        echo "Sandbox $SANDBOX is running."
         echo "Output files available in: $SANDBOX_DIR/output/"
         docker compose ps
+        EXIT_CODE=0
         ;;
     
     reset)
@@ -81,7 +95,7 @@ case $OPERATION in
         mkdir -p output/
         
         echo "Building fresh images..."
-        docker compose build --no-cache sandbox-runner
+        docker compose build --no-cache
         
         echo "Sandbox reset complete."
         EXIT_CODE=$?
@@ -91,15 +105,15 @@ case $OPERATION in
         echo "Checking sandbox health..."
         docker compose ps
         echo ""
-        echo "Latest output artifacts:"
-        if [ -f output/exit_code.txt ]; then
-            echo "  exit_code: $(cat output/exit_code.txt)"
-        fi
-        if [ -f output/test-results.json ]; then
-            echo "  test_results: output/test-results.json"
-        fi
-        if [ -f output/health.json ]; then
-            echo "  health: $(cat output/health.json)"
+        echo "Service status:"
+        if [ "$SANDBOX" = "eshopweb" ]; then
+            echo "  Web: $(curl -s -o /dev/null -w '%{http_code}' http://localhost:5106/ || echo 'N/A')"
+            echo "  API: $(curl -s -o /dev/null -w '%{http_code}' http://localhost:5200/swagger/index.html || echo 'N/A')"
+            echo "  DB:  managed by sqlserver container healthcheck"
+        else
+            echo "  Server: $(curl -s -o /dev/null -w '%{http_code}' http://localhost:8103/healthcheck || echo 'N/A')"
+            echo "  App: $(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/ || echo 'N/A')"
+            echo "  DB: $(docker compose exec postgres pg_isready -U medplum 2>/dev/null && echo '200' || echo 'N/A')"
         fi
         EXIT_CODE=0
         ;;

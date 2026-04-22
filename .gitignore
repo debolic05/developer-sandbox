@@ -24,4 +24,4 @@ Thumbs.db
 # Project-specific (don't include project code in sandbox)
 # The sandbox references ../eShopOnWeb and ../medplum
 eShopOnWeb/
-# medplum/ - now tracked for sandbox configuration
+medplum/

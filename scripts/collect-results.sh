@@ -3,12 +3,10 @@
 # Collects and merges results from a sandbox run
 # Usage: ./collect-results.sh <eshopweb|medplum>
 
-set -euo pipefail
-
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 SANDBOX_ROOT="$(dirname "$SCRIPT_DIR")"
 
-SANDBOX=${1:-}
+SANDBOX=$1
 
 if [ -z "$SANDBOX" ]; then
     echo "Usage: $0 <eshopweb|medplum>"
@@ -29,33 +27,39 @@ if [ -f "$OUTPUT_DIR/exit_code.txt" ]; then
     EXIT_CODE=$(cat "$OUTPUT_DIR/exit_code.txt")
 fi
 
-BUILD_LOG_JSON="null"
+# Collect build log
+BUILD_LOG=""
 if [ -f "$OUTPUT_DIR/build.log" ]; then
-    BUILD_LOG_JSON=$(sed 's/\\/\\\\/g; s/"/\\"/g' "$OUTPUT_DIR/build.log" | awk 'BEGIN { printf "\"" } { if (NR > 1) printf "\\n"; printf "%s", $0 } END { printf "\"" }')
+    BUILD_LOG=$(cat "$OUTPUT_DIR/build.log")
 fi
 
-TEST_RESULTS_JSON='{"status":"not-run"}'
+# Collect test results
+TEST_RESULTS=""
 if [ -f "$OUTPUT_DIR/test-results.json" ]; then
-    TEST_RESULTS_JSON=$(cat "$OUTPUT_DIR/test-results.json")
-fi
-
-HEALTH_CHECK_JSON='{"status":"unknown"}'
-if [ -f "$OUTPUT_DIR/health.json" ]; then
-    HEALTH_CHECK_JSON=$(cat "$OUTPUT_DIR/health.json")
-fi
-
-printf '{\n'
-printf '  "sandbox": "%s",\n' "$SANDBOX"
-printf '  "timestamp": "%s",\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-printf '  "exit_code": %s,\n' "$EXIT_CODE"
-if [ "$EXIT_CODE" -eq 0 ]; then
-    printf '  "success": true,\n'
+    TEST_RESULTS=$(cat "$OUTPUT_DIR/test-results.json")
 else
-    printf '  "success": false,\n'
+    TEST_RESULTS="{\"status\": \"not-run\"}"
 fi
-printf '  "build_log": %s,\n' "$BUILD_LOG_JSON"
-printf '  "test_results": %s,\n' "$TEST_RESULTS_JSON"
-printf '  "health_check": %s\n' "$HEALTH_CHECK_JSON"
-printf '}\n'
+
+# Collect health check
+HEALTH_CHECK=""
+if [ -f "$OUTPUT_DIR/health.json" ]; then
+    HEALTH_CHECK=$(cat "$OUTPUT_DIR/health.json")
+else
+    HEALTH_CHECK="{\"status\": \"unknown\"}"
+fi
+
+# Generate unified results JSON
+cat <<EOF
+{
+  "sandbox": "$SANDBOX",
+  "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "exit_code": $EXIT_CODE,
+  "success": $([ $EXIT_CODE -eq 0 ] && echo "true" || echo "false"),
+  "build_log": "$(echo "$BUILD_LOG" | sed 's/"/\\"/g' | sed ':a;N;$!ba;s/\n/\\n/g')",
+  "test_results": $TEST_RESULTS,
+  "health_check": $HEALTH_CHECK
+}
+EOF
 
 exit $EXIT_CODE

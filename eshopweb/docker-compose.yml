@@ -1,18 +1,49 @@
+version: '3.4'
+
 services:
-  sandbox-runner:
+  eshopwebmvc:
+    image: ${DOCKER_REGISTRY-}eshopwebmvc
     build:
-      context: .
-      dockerfile: Dockerfile.runner
+      context: ../../eShopOnWeb
+      dockerfile: src/Web/Dockerfile
     depends_on:
       sqlserver:
         condition: service_healthy
     environment:
-      ASPNETCORE_ENVIRONMENT: Docker
-      ASPNETCORE_URLS: http://+:8080
-      Seq__ServerUrl: http://localhost:5341
+      - ASPNETCORE_ENVIRONMENT=Docker
+      - ASPNETCORE_URLS=http://+:8080
+      - Seq__ServerUrl=http://localhost:5341
+    ports:
+      - "5106:8080"
     volumes:
-      - ../../eShopOnWeb:/workspace
       - ./output:/output
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  eshoppublicapi:
+    image: ${DOCKER_REGISTRY-}eshoppublicapi
+    build:
+      context: ../../eShopOnWeb
+      dockerfile: src/PublicApi/Dockerfile
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Docker
+      - ASPNETCORE_URLS=http://+:8080
+      - Seq__ServerUrl=http://localhost:5341
+    ports:
+      - "5200:8080"
+    volumes:
+      - ./output:/output
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/swagger/index.html"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
 
   sqlserver:
     image: mcr.microsoft.com/mssql/server:2022-latest

@@ -1,40 +1,6 @@
-services:
-  sandbox-runner:
-    build:
-      context: .
-      dockerfile: Dockerfile.runner
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    environment:
-      MEDPLUM_PORT: 8103
-      MEDPLUM_BASE_URL: 'http://localhost:8103/'
-      MEDPLUM_APP_BASE_URL: 'http://localhost:3000/'
-      MEDPLUM_STORAGE_BASE_URL: 'http://localhost:8103/storage/'
-      MEDPLUM_DATABASE_HOST: 'postgres'
-      MEDPLUM_DATABASE_PORT: 5432
-      MEDPLUM_DATABASE_DBNAME: 'medplum'
-      MEDPLUM_DATABASE_USERNAME: 'medplum'
-      MEDPLUM_DATABASE_PASSWORD: 'medplum'
-      MEDPLUM_REDIS_HOST: 'redis'
-      MEDPLUM_REDIS_PORT: 6379
-      MEDPLUM_REDIS_PASSWORD: 'medplum'
-      MEDPLUM_BINARY_STORAGE: 'file:./binary/'
-      MEDPLUM_SUPPORT_EMAIL: '"Medplum" <support@medplum.com>'
-      MEDPLUM_MAX_JSON_SIZE: '1mb'
-      MEDPLUM_MAX_BATCH_SIZE: '50mb'
-      MEDPLUM_VM_CONTEXT_BOTS_ENABLED: 'true'
-      MEDPLUM_DEFAULT_BOT_RUNTIME_VERSION: 'vmcontext'
-      MEDPLUM_ALLOWED_ORIGINS: '*'
-      MEDPLUM_INTROSPECTION_ENABLED: 'true'
-      MEDPLUM_SHUTDOWN_TIMEOUT_MILLISECONDS: 30000
-    volumes:
-      - ../../medplum:/workspace
-      - ./output:/output
-      - ./medplum.config.json:/workspace/medplum.config.json:ro
+version: '3.4'
 
+services:
   postgres:
     image: postgres:16
     restart: unless-stopped
@@ -75,6 +41,74 @@ services:
       timeout: 5s
       retries: 5
 
+  medplum-server:
+    image: medplum/medplum-server:latest
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - '8103:8103'
+    environment:
+      MEDPLUM_PORT: 8103
+      MEDPLUM_BASE_URL: 'http://localhost:8103/'
+      MEDPLUM_APP_BASE_URL: 'http://localhost:3000/'
+      MEDPLUM_STORAGE_BASE_URL: 'http://localhost:8103/storage/'
+
+      MEDPLUM_DATABASE_HOST: 'postgres'
+      MEDPLUM_DATABASE_PORT: 5432
+      MEDPLUM_DATABASE_DBNAME: 'medplum'
+      MEDPLUM_DATABASE_USERNAME: 'medplum'
+      MEDPLUM_DATABASE_PASSWORD: 'medplum'
+
+      MEDPLUM_REDIS_HOST: 'redis'
+      MEDPLUM_REDIS_PORT: 6379
+      MEDPLUM_REDIS_PASSWORD: 'medplum'
+
+      MEDPLUM_BINARY_STORAGE: 'file:./binary/'
+      MEDPLUM_SUPPORT_EMAIL: '"Medplum" <support@medplum.com>'
+      MEDPLUM_MAX_JSON_SIZE: '1mb'
+      MEDPLUM_MAX_BATCH_SIZE: '50mb'
+      MEDPLUM_VM_CONTEXT_BOTS_ENABLED: 'true'
+      MEDPLUM_DEFAULT_BOT_RUNTIME_VERSION: 'vmcontext'
+      MEDPLUM_ALLOWED_ORIGINS: '*'
+      MEDPLUM_INTROSPECTION_ENABLED: 'true'
+      MEDPLUM_SHUTDOWN_TIMEOUT_MILLISECONDS: 30000
+
+    volumes:
+      - ./output:/output
+      - medplum-binary-storage:/app/binary
+      - ./medplum.config.json:/usr/src/medplum/medplum.config.json:ro
+
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          'fetch("http://localhost:8103/healthcheck").then(r => r.json()).then(console.log).catch(() => { process.exit(1); })',
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  medplum-app:
+    image: medplum/medplum-app:latest
+    restart: unless-stopped
+    depends_on:
+      medplum-server:
+        condition: service_healthy
+    ports:
+      - '3000:3000'
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:3000']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 volumes:
   medplum-postgres-data:
   medplum-redis-data:
+  medplum-binary-storage:
