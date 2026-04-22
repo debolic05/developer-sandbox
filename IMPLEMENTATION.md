@@ -1,520 +1,236 @@
-# Implementation Summary: Developer Sandbox for AI Agents
-
-## What Was Built (2-Hour Exercise)
-
-A **Docker-based sandboxed execution environment** for building, testing, and validating code changes in two real-world open-source projects with completely different technology stacks, designed specifically for non-interactive execution by AI coding agents.
-
-## Key Achievement
-
-✅ **Both eShopOnWeb (.NET 10 + SQL Server) and Medplum (Node.js 22 + PostgreSQL) can be built, tested, and validated in completely isolated, reproducible sandboxes that reset to clean state between runs.**
-
----
-
-## Project Structure
-
-```
-developer-sandbox/
-├── README.md                          # Full architecture guide (2000+ lines)
-├── QUICKSTART.md                      # Quick reference guide
-├── VALIDATION.md                      # Proof & verification steps
-├── .gitignore                         # Ignore output dirs, Docker artifacts
-│
-├── eshopweb/
-│   ├── docker-compose.yml             # 60 lines: SQL Server + Web + API services
-│   │                                  # - Health checks on all services
-│   │                                  # - Output volume for result capture
-│   │                                  # - Database persistence volumes
-│   │
-│   └── entrypoint.sh                  # 80 lines: Non-interactive build → test → run
-│                                      # - Waits for SQL Server readiness
-│                                      # - dotnet restore + build
-│                                      # - Test execution with JSON output
-│                                      # - HTTP healthcheck verification
-│                                      # - Structured output to /output/
-│
-├── medplum/
-│   ├── docker-compose.yml             # 100 lines: PostgreSQL + Redis + Services
-│   │                                  # - Health checks with proper sequencing
-│   │                                  # - Output volume for result capture
-│   │                                  # - Database & cache persistence
-│   │
-│   └── entrypoint.sh                  # 95 lines: Non-interactive Node.js sequence
-│                                      # - Waits for PostgreSQL + Redis
-│                                      # - npm run migrate + build
-│                                      # - Test seeding & execution
-│                                      # - Health endpoint verification
-│                                      # - Structured output to /output/
-│
-└── scripts/
-    ├── run-sandbox.sh                 # 130 lines: Unified launcher interface
-    │                                  # - build: docker compose build --no-cache
-    │                                  # - run: Start services, wait for health
-    │                                  # - reset: Destroy volumes, rebuild
-    │                                  # - health: Quick service status check
-    │                                  # - Consistent interface: ./run-sandbox.sh <project> <op>
-    │
-    ├── sandbox-reset.sh               # 40 lines: Cold-start reset
-    │                                  # - docker compose down -v
-    │                                  # - Clear output directory
-    │                                  # - Rebuild images from scratch
-    │                                  # - Ensures deterministic state (~30-45s)
-    │
-    └── collect-results.sh             # 50 lines: Output aggregation
-                                        # - Reads build.log, test-results.json, health.json
-                                        # - Merges into unified JSON document
-                                        # - Returns structured results for agent harness
-```
-
-**Total implementation**: ~13 files, ~600 lines of code/config, ~4000 lines of documentation
-
----
-
-## Architecture Decision: Two Sandboxes, Not One
-
-### The Problem
-- **eShopOnWeb**: .NET 10, SQL Server 2022, xUnit tests, dotnet CLI
-- **Medplum**: Node.js 22, PostgreSQL 16 + Redis 7, Jest tests, npm/Turborepo
-
-These are fundamentally incompatible:
-- Different database engines with different initialization
-- Different runtimes requiring different toolchains
-- Different build/test frameworks
-
-Forcing them into one environment = complex abstraction layers.
-
-### The Solution
-**Two completely isolated sandboxes** with:
-- Independent docker-compose configurations
-- Separate networking (no shared services)
-- Isolated failure domains (agent failure in one doesn't corrupt other)
-- Independent resource allocation
-
-### Why This Matters for Agents
-✅ Simple, predictable interface: `./run-sandbox.sh <project> run`  
-✅ No cross-project state pollution  
-✅ Each project can evolve independently  
-✅ Easy to add more projects (follow the same pattern)  
-
----
-
-## How It Works: Agent Workflow
-
-```bash
-# 1. Reset to clean state
-./scripts/sandbox-reset.sh medplum
-# Destroys containers/volumes, clears output, rebuilds images (~40s)
-
-# 2. Agent generates code changes
-# (External process - agent modifies ../medplum/ repo locally)
-
-# 3. Execute sandbox build → test → validate
-./scripts/run-sandbox.sh medplum run
-# - Starts PostgreSQL + Redis + Server + App
-# - Waits for database migrations
-# - Runs npm build, tests, seed
-# - Verifies healthcheck endpoints
-# - Captures all results to /output/
-
-# 4. Collect structured results
-./scripts/collect-results.sh medplum > results.json
-# {
-#   "sandbox": "medplum",
-#   "timestamp": "2026-04-19T13:02:30Z",
-#   "exit_code": 0,
-#   "success": true,
-#   "build_log": "...",
-#   "test_results": { ... },
-#   "health_check": { "status": "healthy" }
-# }
-
-# 5. Agent parses results
-exit_code=$(jq '.exit_code' results.json)
-if [ $exit_code -eq 0 ]; then
-    echo "✓ Validation passed - ready for PR"
-else
-    echo "✗ Validation failed - retry with fixes"
-fi
-```
-
----
-
-## Design Decisions at a Glance
-
-| Decision | Rationale | Trade-off |
-|----------|-----------|-----------|
-| **Two sandboxes, not one** | Different DBs, runtimes, toolchains; failure isolation | More setup, but worth it for clarity |
-| **Cold-start reset** | Deterministic state; catch state bugs | Slower (~45s) vs. warm (~10s) |
-| **Reuse existing Dockerfiles** | Less maintenance; upstream changes flow through | Less control over image layers |
-| **Entrypoint scripts** | Headless execution; AI agents can't click dialogs | More bash scripting |
-| **Structured JSON output** | Machine-readable for agent harness | More parsing complexity |
-| **Output volumes** | Capture build/test results without SSH/log pulling | Extra mount management |
-| **Health checks** | Know when services are ready before validating | More docker-compose config |
-
----
-
-## What Each Component Does
-
-### docker-compose.yml (Both Sandboxes)
-
-**Purpose**: Define and orchestrate all services for one project
-
-**eShopOnWeb**:
-- `eshopwebmvc`: Web app (port 5106)
-- `eshoppublicapi`: REST API (port 5200)  
-- `sqlserver`: SQL Server 2022 (port 1433)
-
-**Medplum**:
-- `medplum-server`: FHIR API (port 8103)
-- `medplum-app`: React UI (port 3000)
-- `postgres`: PostgreSQL 16 (port 5432)
-- `redis`: Cache + pub/sub (port 6379)
-
-**Key features**:
-- Health checks on each service (know when ready)
-- Named volumes for persistence (can reset cleanly)
-- Output volume mount (capture results)
-- Service dependency chains (wait for DB before app)
-
-### entrypoint.sh (Both Sandboxes)
-
-**Purpose**: Non-interactive build → test → run inside container
-
-**General pattern**:
-1. Wait for infrastructure (DB, cache) to be ready
-2. Install dependencies (dotnet restore, npm ci)
-3. Build code (dotnet build, npm build)
-4. Run tests with structured output (xUnit JSON, Jest JSON)
-5. Start application and verify it responds (HTTP 200, healthcheck)
-6. Exit with proper code (0 = success, 1 = failure)
-
-**Critical features**:
-- No interactive prompts (agent can't click "Yes")
-- All output captured to `/output/`
-- Timeout guards (don't hang forever)
-- Proper exit codes (harness knows success/failure)
-
-### run-sandbox.sh (Orchestration Layer)
-
-**Purpose**: Unified interface for agent harness
-
-**Operations**:
-- `build` - Compile Docker images (one-time setup)
-- `run` - Full sequence: start services, wait for health, run entrypoint
-- `reset` - Destroy everything, start fresh (cold-start)
-- `health` - Quick status check of running services
-
-**Key feature**: Same interface for both projects
-```bash
-./run-sandbox.sh eshopweb run    # Works
-./run-sandbox.sh medplum run     # Works
-./run-sandbox.sh unknown run     # Error with clear message
-```
-
-### collect-results.sh (Output Aggregation)
-
-**Purpose**: Merge dispersed output files into single JSON
-
-**Inputs**:
-- `output/build.log` (all stdout + stderr)
-- `output/test-results.json` (xUnit or Jest format)
-- `output/health.json` (HTTP response)
-- `output/exit_code.txt` (0 or 1)
-
-**Output**:
-```json
-{
-  "sandbox": "medplum",
-  "timestamp": "2026-04-19T13:02:30Z",
-  "exit_code": 0,
-  "success": true,
-  "build_log": "...",
-  "test_results": { "passed": 320, "failed": 0 },
-  "health_check": { "status": "healthy" }
-}
-```
+# Implementation Summary
 
-**Why**: Agent harness parses JSON programmatically, not logs
+## Objective
 
----
+Build a Docker-based sandbox system that allows an AI coding agent to safely build, run, reset, and validate changes against two real-world open-source applications with very different stacks:
 
-## How It Handles Key Challenges
+- `eShopOnWeb`
+- `Medplum`
 
-### 1. Non-Interactive Execution
-
-**Challenge**: AI agents can't answer prompts or click through dialogs
-
-**Solution**:
-- No SQL scripts (migrations in C# code)
-- All config from environment variables
-- Health checks poll programmatically (not manual approval)
-- `timeout` command prevents hangs
-
-### 2. Clean State Between Runs
-
-**Challenge**: Agent run #2 must start fresh (no test artifacts from run #1)
-
-**Solution**:
-- Named volumes destroyed on reset (`docker-compose down -v`)
-- Output directory cleared
-- Images rebuilt from scratch
-- ~40 second cold-start overhead worth it for determinism
+The solution needed to be practical, reproducible, and suitable for non-interactive execution.
 
-### 3. Capturing Results
+## What Was Implemented
 
-**Challenge**: Test results must be machine-readable (not just logs)
+I implemented a sandbox framework with:
 
-**Solution**:
-- xUnit and Jest both support `--logger="json"` output
-- All results written to `/output/` volume
-- `collect-results.sh` merges into unified JSON
-- Agent harness parses as structured data
+- separate Docker Compose environments for each project
+- helper scripts for `build`, `run`, `reset`, and `health`
+- project-specific runtime configuration where required
+- output capture through mounted `output` directories
+- clean-state reset behavior for repeatable execution
 
-### 4. Database Initialization
+## Architecture Decision
 
-**Challenge**: Each project has different DB requirements
+### Decision
 
-**eShopOnWeb**:
-- SQL Server 2022 runs in container
-- Entity Framework migrations run on app startup (`Database.Migrate()`)
-- Seed data loads via `SeedDatabaseAsync()`
-- No manual SQL scripts needed
+Use two isolated sandboxes instead of a single shared environment.
 
-**Medplum**:
-- PostgreSQL 16 runs in container
-- `npm run migrate` runs migrations programmatically
-- `npm run test:seed` creates test resources
-- Health check validates connection
+### Why
 
-### 5. Service Readiness
+The two applications have materially different requirements:
 
-**Challenge**: Need to know when services are ready (not just started)
+`eShopOnWeb`
 
-**Solution**:
-- Health checks on each service
-- `docker-compose` waits for `service_healthy` before dependent services start
-- Entrypoint scripts poll for database connectivity
-- Exit code signals failure if readiness timeout
+- ASP.NET Core application stack
+- SQL Server dependency
+- .NET build and startup flow
 
----
+`Medplum`
 
-## Security & Isolation Considerations
+- Node.js application stack
+- PostgreSQL and Redis dependencies
+- configuration-file-driven startup
 
-### Container Isolation
+Trying to force both systems into one shared sandbox would create unnecessary complexity around:
 
-✅ **Namespace isolation**: Each service has isolated network, PID, filesystem  
-✅ **Volume constraints**: Output mount is read-write only to `/output/`  
-✅ **No host access**: Code can't reach host filesystem  
-✅ **Non-root user**: Inherited from project Dockerfiles  
+- dependency isolation
+- service startup ordering
+- data store management
+- debugging
+- failure containment
 
-### Network Isolation
+### Result
 
-✅ **Internal Docker network**: Services communicate via container names, not host ports  
-✅ **Port exposure only as needed**: 5106/5200 for eShopOnWeb, 8103/3000 for Medplum  
-✅ **No inter-sandbox communication**: eShopOnWeb can't reach Medplum services  
+Each sandbox is simpler to understand, easier to reset, and easier to validate independently.
 
-### Threat Model
+## Core Components
 
-**Assumption**: AI-generated code will execute in the sandbox
+### `scripts/run-sandbox.sh`
 
-**Boundaries**:
-- Code confined to container (can't escape to host)
-- Output only to `/output/` directory
-- Can't reach outside sandbox network
-- Process runs as non-root
+Provides a consistent interface for both projects:
 
-**Not protected against**:
-- Docker escape (use trusted runtime + keep updated)
-- DoS (could be mitigated with CPU/memory limits)
-- Supply chain attacks (use digest-pinned base images)
+- `build`
+- `run`
+- `reset`
+- `health`
 
----
+This gives a reviewer or automation harness one predictable entry point regardless of project.
 
-## Performance Characteristics
+### `scripts/sandbox-reset.sh`
 
-### Build Times
+Provides a cold-start reset flow:
 
-| Step | eShopOnWeb | Medplum |
-|------|-----------|---------|
-| Image build (first) | 45-60s | 10-15s (pulls pre-built) |
-| Container startup | 8-10s | 8-10s |
-| DB migration | 5s | 10-15s |
-| Dependencies | 15s | 20s |
-| Build code | 15-20s | 30-40s |
-| Tests | 25-35s | 45-60s |
-| **Total (cold-start)** | **~120s** | **~140s** |
+- stop containers
+- remove volumes
+- clear sandbox output
+- rebuild images
 
-### Image Sizes
+This favors deterministic validation over the fastest possible restart time.
 
-- eShopOnWeb Web: ~200MB
-- eShopOnWeb API: ~200MB
-- SQL Server: ~4GB (pre-pulled from Docker Hub)
-- Medplum Server: ~400MB (pre-built)
-- PostgreSQL: ~200MB
-- Redis: ~100MB
+### `scripts/collect-results.sh`
 
-### Reset Performance
+Collects sandbox output artifacts and returns a single JSON payload that includes:
 
-- Cold-start reset: 30-45s (destroy + rebuild)
-- Warm-start reset: ~5s (destroy containers, reuse images)
-- Recommendation: Use cold-start for validation (determinism > speed)
+- exit code
+- build log
+- test results
+- health output
 
----
+That makes the sandbox easier to integrate with an AI-agent workflow or external runner.
 
-## File Inventory & Line Counts
+## eShopOnWeb Work
 
-```
-README.md                  (~2000 lines)  Architecture, decisions, usage guide
-QUICKSTART.md              (~200 lines)   Quick reference
-VALIDATION.md              (~600 lines)   Proof & verification steps
-IMPLEMENTATION.md          (this file)    Summary document
+### Problem
 
-eshopweb/docker-compose.yml     (~60 lines)
-eshopweb/entrypoint.sh          (~80 lines)
+`eShopOnWeb` initially had runtime and startup issues in the sandboxed environment.
 
-medplum/docker-compose.yml      (~100 lines)
-medplum/entrypoint.sh           (~95 lines)
+Observed issues included:
 
-scripts/run-sandbox.sh          (~130 lines)
-scripts/sandbox-reset.sh        (~40 lines)
-scripts/collect-results.sh      (~50 lines)
+- application startup failure caused by missing Seq configuration
+- SQL Server readiness and health sensitivity
+- API health verification targeting a path that was not appropriate for the running container
 
-.gitignore                      (~20 lines)
+### Fixes Implemented
 
-Total: ~400 lines of code/config, ~2800 lines of documentation
-```
+- added `Seq__ServerUrl=http://localhost:5341` to the relevant container environment
+- updated SQL Server healthchecking to use `sqlcmd` with `-C`
+- increased SQL Server health retries
+- aligned API health verification to `swagger/index.html`
 
----
+### Outcome
 
-## Future Improvements
+Validated in the VM:
 
-### Quick Wins (If Time Permits)
+- Web returned `200`
+- API returned `200`
+- SQL Server became healthy
 
-1. **Warm-start mode**: Implement fast reset (containers only, reuse images) ~15 min
-2. **Resource limits**: Add CPU/memory constraints to docker-compose ~10 min
-3. **Health check polling**: Make readiness timeout configurable ~10 min
+There is still room to improve health reporting consistency, but the application endpoints were confirmed working.
 
-### Phase 2 (Beyond 2 hours)
+## Medplum Work
 
-1. **Security hardening**: Read-only rootfs, dropped capabilities, network policies
-2. **Observability**: Logging aggregation, tracing, metrics collection
-3. **Scaling**: Support multiple concurrent agent runs on different ports
-4. **Artifact storage**: Archive test results and logs to S3/Azure Blob
+### Problem
 
-### Phase 3+ (Medium-term)
+`Medplum` initially failed because the server expected `medplum.config.json` at runtime and could not find it in the container.
 
-1. **Kubernetes integration**: Helm charts for cloud deployment
-2. **CI/CD integration**: GitHub Actions, GitLab CI, Jenkins
-3. **Multi-project support**: Add more open-source projects to sandbox library
-4. **AI integration**: Direct REST API for agent harness (not just shell scripts)
+### Root Cause
 
----
+The server image starts using a default configuration path. Without mounting the config into the expected location, the service repeatedly restarted with `ENOENT`.
 
-## How to Present This
+### Fixes Implemented
 
-### 15-Minute Walkthrough Format
+- created a sandbox-local `medplum.config.json`
+- updated database host to `postgres`
+- updated Redis host to `redis`
+- mounted the config file into `/usr/src/medplum/medplum.config.json`
 
-**1. Intro (1 min)**
-- Built a Docker-based sandbox for AI agents to validate code changes
-- Two separate, isolated environments for .NET and Node.js projects
-- Non-interactive, deterministic, structured output
+### Outcome
 
-**2. Architecture (3 min)**
-- Show README diagram of two sandboxes
-- Explain why separate (different DBs, runtimes, toolchains)
-- Show docker-compose structure and services
+Validated in the VM:
 
-**3. How It Works (5 min)**
-- Live demo (if Docker available): `./run-sandbox.sh eshopweb run`
-- Show output files being generated
-- Run `collect-results.sh` and show JSON output
-- Explain how agent harness would parse this
+- server health endpoint returned `200`
+- app returned `200`
+- PostgreSQL became healthy
+- Redis became healthy
 
-**4. Key Decisions (3 min)**
-- Cold-start reset for determinism
-- Structured JSON for machine-parsing
-- Health checks for readiness verification
-- No changes to original projects (reuse Dockerfiles)
+This was the most important Medplum-specific fix because it turned a crash-looping container into a working sandbox service.
 
-**5. Questions (3 min)**
+## Validation Approach
 
-### One-Slide Summary
+Validation was performed in a Linux VM to confirm that the sandbox behaved correctly outside the local authoring environment.
 
-```
-Developer Sandbox for AI Agents
+The validation flow was:
 
-✓ Two isolated Docker environments (eShopOnWeb + Medplum)
-✓ Non-interactive, headless execution (no prompts)
-✓ Cold-start reset between runs (deterministic state)
-✓ Structured JSON output (machine-readable results)
-✓ ~600 lines of code + 2800 lines of documentation
-✓ Ready for AI agent harness integration
+1. reset sandbox
+2. run sandbox
+3. inspect container status
+4. verify service endpoints
+5. confirm supporting services were healthy
 
-Time invested: 2 hours
-Result: Production-ready infrastructure for agent validation
-```
+### Verified Results
 
----
+`eShopOnWeb`
 
-## Proof of Work
+- Web: `200`
+- API: `200`
+- DB: healthy
 
-**What demonstrates this is real:**
+`Medplum`
 
-1. ✅ Complete docker-compose configs for both projects
-2. ✅ Entrypoint scripts handling build → test → run sequences
-3. ✅ Orchestration shell scripts for unified interface
-4. ✅ Structured output capture design
-5. ✅ Comprehensive documentation (this + README + QUICKSTART + VALIDATION)
-6. ✅ Thoughtful design decisions explained and justified
-7. ✅ Security and isolation boundaries documented
-8. ✅ Performance characteristics analyzed
-9. ✅ Integration guide for agent harness provided
-10. ✅ Verification steps and expected outputs documented
+- Server: `200`
+- App: `200`
+- PostgreSQL: healthy
+- Redis: healthy
 
-**When Docker is available**, verify with:
-```bash
-./scripts/run-sandbox.sh eshopweb build
-./scripts/run-sandbox.sh eshopweb run
-./scripts/collect-results.sh eshopweb | jq .
-```
+## Tradeoffs
 
-All output files should be present and properly formatted.
+### Isolation over consolidation
 
----
+Pros:
 
-## The Goal Achieved
+- cleaner architecture
+- easier debugging
+- lower coupling between projects
+- simpler reasoning for reviewers and automation
 
-✅ AI agents can now:
-1. Call `./scripts/run-sandbox.sh <project> run`
-2. Generate code changes locally
-3. Get back structured JSON results
-4. Parse success/failure and test details
-5. Decide whether to create PR or retry
+Cons:
 
-✅ Each sandbox run:
-1. Starts from completely clean state
-2. Builds and tests the project
-3. Validates with health checks
-4. Returns deterministic, reproducible results
-5. Resets to clean for next run
+- duplicated configuration in some places
+- separate health logic for each project
+- slightly more setup overhead
 
-✅ Infrastructure is:
-1. **Isolated**: Two sandboxes, no cross-pollution
-2. **Deterministic**: Cold-start ensures reproducibility
-3. **Scalable**: Easy to add more projects
-4. **Documented**: Clear decisions and design rationale
-5. **Production-ready**: No edge cases left unhandled
+This was the right tradeoff for reliability and clarity.
 
----
+### Deterministic reset over fastest startup
 
-## Files Ready for Handoff
+Pros:
 
-Location: `C:\Users\debol\Repos\developer-sandbox\`
+- more repeatable validation
+- less hidden state between runs
+- better fit for AI-agent workflows
 
-- `README.md` - Comprehensive architecture & usage guide
-- `QUICKSTART.md` - Quick reference for operators
-- `VALIDATION.md` - Verification steps & expected outputs
-- `eshopweb/` - .NET sandbox configuration
-- `medplum/` - Node.js sandbox configuration
-- `scripts/` - Orchestration layer
+Cons:
 
-Ready to be pushed to GitHub and integrated with AI agent harness.
+- slower than reusing warm containers
+
+For an interview deliverable focused on correctness and reproducibility, this tradeoff is worth it.
+
+## What I Would Improve Next
+
+If given more time, I would:
+
+- refine `eShopOnWeb` container health reporting so Docker status more closely matches verified service behavior
+- reduce duplication across helper scripts
+- add lightweight automated validation in CI
+- standardize output artifacts further across both sandboxes
+
+## Final Outcome
+
+The final solution provides:
+
+- isolated execution environments for both target projects
+- repeatable reset and run workflows
+- working VM-validated runtime behavior for both sandboxes
+- a practical foundation for AI-agent-driven code validation
+
+## Files Most Relevant To The Submission
+
+- `README.md`
+- `QUICKSTART.md`
+- `IMPLEMENTATION.md`
+- `scripts/run-sandbox.sh`
+- `scripts/sandbox-reset.sh`
+- `scripts/collect-results.sh`
+- `eshopweb/docker-compose.yml`
+- `medplum/docker-compose.yml`
+- `medplum/medplum.config.json`
