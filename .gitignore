@@ -1,0 +1,27 @@
+# Ignore build artifacts and volumes
+output/
+logs/
+
+# Docker artifacts
+.docker/
+docker-compose.override.yml.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Project-specific (don't include project code in sandbox)
+# The sandbox references ../eShopOnWeb and ../medplum
+eShopOnWeb/
+# medplum/ - now tracked for sandbox configuration
