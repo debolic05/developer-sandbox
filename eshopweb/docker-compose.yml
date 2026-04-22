@@ -1,0 +1,33 @@
+services:
+  sandbox-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile.runner
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Docker
+      ASPNETCORE_URLS: http://+:8080
+      Seq__ServerUrl: http://localhost:5341
+    volumes:
+      - ../../eShopOnWeb:/workspace
+      - ./output:/output
+
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    ports:
+      - "1433:1433"
+    environment:
+      - SA_PASSWORD=@someThingComplicated1234
+      - ACCEPT_EULA=Y
+    volumes:
+      - sqlserver-data:/var/opt/mssql
+    healthcheck:
+      test: ["CMD", "/opt/mssql-tools18/bin/sqlcmd", "-C", "-S", "localhost", "-U", "sa", "-P", "@someThingComplicated1234", "-Q", "SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  sqlserver-data:

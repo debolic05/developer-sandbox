@@ -1,0 +1,12 @@
+FROM mcr.microsoft.com/dotnet/sdk:10.0
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+
+COPY entrypoint.sh /usr/local/bin/sandbox-entrypoint.sh
+RUN chmod +x /usr/local/bin/sandbox-entrypoint.sh
+
+ENTRYPOINT ["/usr/local/bin/sandbox-entrypoint.sh"]
